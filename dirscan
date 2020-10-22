@@ -97,7 +97,7 @@ def dir_and_file_scan(subdir):
         for f in os.scandir(subdir):
             if f.is_dir(follow_symlinks=False):
                 subfolders.append(f.path)
-            if f.is_file(follow_symlinks=True):
+            if f.is_file(follow_symlinks=False):
                 files.append(f.path)
     except:
         pass
