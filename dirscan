@@ -38,7 +38,6 @@ def calc_percentage(num1, num2) -> int:
 
 def merge_user_lists(list_dict_users) -> dict:
     merged_user_dict = {}
-
     for list_users in list_dict_users:
         for user_dict in list_users:
             for user_id in user_dict:
@@ -55,7 +54,7 @@ def merge_user_lists(list_dict_users) -> dict:
 def scan_directory(q, subdirectories_to_scan) -> None:
     file_count = 0
     size_bytes = 0
-    sub_directories = 0
+    subdir_count = 0
     list_users = []
     user_stats = {}
     dict_file_histogram = {
@@ -70,10 +69,11 @@ def scan_directory(q, subdirectories_to_scan) -> None:
         8: ['2MiB', 0]
     }
 
-    for dir_entry in subdirectories_to_scan:
-        sub_directories += len(glob.glob(dir_entry + '*/', recursive=True))
-
-        for filename in glob.iglob(dir_entry + '**/**', recursive=True):
+    for subdir in subdirectories_to_scan:
+        subfolders, file_list = dir_and_file_scan(subdir)
+        file_count += len(file_list)
+        subdir_count += len(file_list)
+        for filename in file_list:
             if os.path.exists(filename) and not os.path.islink(filename):
                 try:
                     file_stat = os.stat(filename)
@@ -90,8 +90,21 @@ def scan_directory(q, subdirectories_to_scan) -> None:
                 except:
                     pass
     list_users.append(user_stats)
+    q.put([subdir_count, size_bytes, file_count, list_users, dict_file_histogram])
 
-    q.put([sub_directories, size_bytes, file_count, list_users, dict_file_histogram])
+
+def dir_and_file_scan(subdir):
+    subfolders, files = [], []
+    for f in os.scandir(subdir):
+        if f.is_dir():
+            subfolders.append(f.path)
+        if f.is_file():
+            files.append(f.path)
+    for subdir in list(subfolders):
+        sf, f = dir_and_file_scan(subdir)
+        subfolders.extend(sf)
+        files.extend(f)
+    return subfolders, files
 
 
 if __name__ == '__main__':
