@@ -72,34 +72,35 @@ def scan_directory(q, subdirectories_to_scan) -> None:
     for subdir in subdirectories_to_scan:
         subfolders, file_list = dir_and_file_scan(subdir)
         file_count += len(file_list)
-        subdir_count += len(file_list)
+        subdir_count += len(subfolders)
         for filename in file_list:
-            if os.path.exists(filename) and not os.path.islink(filename):
-                try:
-                    file_stat = os.stat(filename)
-                    size_bytes += file_stat.st_size
-                    file_count += 1
-                    index = bisect.bisect(raw_bins, file_stat.st_size)
-                    dict_file_histogram[index][1] = dict_file_histogram[index][1] + 1
-                    if file_stat.st_uid in user_stats:
-                        user_stats[file_stat.st_uid] = {'filecount': user_stats[file_stat.st_uid]['filecount'] + 1,
-                                                        'filesize': user_stats[file_stat.st_uid]['filesize']
-                                                                    + file_stat.st_size}
-                    else:
-                        user_stats[file_stat.st_uid] = {'filecount': 1, 'filesize': file_stat.st_size}
-                except:
-                    pass
+            file_stat = os.stat(filename)
+            size_bytes += file_stat.st_size
+            file_count += 1
+            index = bisect.bisect(raw_bins, file_stat.st_size)
+            if index > 8:
+                index = 8
+            dict_file_histogram[index][1] = dict_file_histogram[index][1] + 1
+            if file_stat.st_uid in user_stats:
+                user_stats[file_stat.st_uid] = {'filecount': user_stats[file_stat.st_uid]['filecount'] + 1,
+                                                'filesize': user_stats[file_stat.st_uid]['filesize']
+                                                            + file_stat.st_size}
+            else:
+                user_stats[file_stat.st_uid] = {'filecount': 1, 'filesize': file_stat.st_size}
     list_users.append(user_stats)
     q.put([subdir_count, size_bytes, file_count, list_users, dict_file_histogram])
 
 
 def dir_and_file_scan(subdir):
     subfolders, files = [], []
-    for f in os.scandir(subdir):
-        if f.is_dir():
-            subfolders.append(f.path)
-        if f.is_file():
-            files.append(f.path)
+    try:
+        for f in os.scandir(subdir):
+            if f.is_dir(follow_symlinks=False):
+                subfolders.append(f.path)
+            if f.is_file(follow_symlinks=True):
+                files.append(f.path)
+    except:
+        pass
     for subdir in list(subfolders):
         sf, f = dir_and_file_scan(subdir)
         subfolders.extend(sf)
@@ -117,7 +118,12 @@ if __name__ == '__main__':
 
     raw_bins.sort()
 
-    list_directories = glob.glob(directory_to_scan + '/*/')
+    list_directories = []
+
+    for f in os.scandir(directory_to_scan):
+        if f.is_dir(follow_symlinks=False):
+            list_directories.append(f.path)
+    list_directories.append(os.getcwd())
 
     print("Starting scan in: %s" % directory_to_scan)
 
