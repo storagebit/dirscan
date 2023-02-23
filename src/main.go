@@ -86,17 +86,18 @@ func humanReadableSize(size int64) string {
 
 // func spinner is used to display a spinner on the command line while the program is running
 func spinner(stop chan bool, totalFilesCount *int64, totalDirectoriesCount *int64, start *time.Time) {
-	frames := []string{"◐", "◓", "◑", "◒"} // Define the frames for the spinner
-
+	// Define the frames for the spinner
+	frames := []string{"◐", "◓", "◑", "◒", "\u26A1"}
 	for {
 		select {
 		case <-stop:
-			return // Stop the spinner when a value is received on the stop channel
+			// Stop the spinner when a value is received on the stop channel
+			return
 		default:
 			for _, frame := range frames {
 				duration := time.Since(*start)
 				rate := float64(*totalFilesCount) / duration.Seconds()
-				fmt.Printf("\r%s Scanning... Files scanned: %d Directories scanned: %d Rate: %.1f files/second", frame, *totalFilesCount, *totalDirectoriesCount, rate)
+				fmt.Printf("\r%s Scanning... Files scanned: %d Directories scanned: %d Rate: %.0f files/second", frame, *totalFilesCount, *totalDirectoriesCount, rate)
 				time.Sleep(250 * time.Millisecond)
 			}
 		}
