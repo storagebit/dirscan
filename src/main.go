@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/user"
+	"path"
 	"path/filepath"
 	"sort"
 	"syscall"
@@ -69,36 +71,44 @@ func (a bySizeUser) Len() int           { return len(a) }
 func (a bySizeUser) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a bySizeUser) Less(i, j int) bool { return a[i].size > a[j].size }
 
-// func humanReadableSize is used to convert a size in bytes to a human readable format
+// func humanReadableSize is used to convert a size in bytes to a human-readable format
 func humanReadableSize(size int64) string {
 	if size < 1024 {
-		return fmt.Sprintf("%d bytes", size)
-	} else if size < 1024*1024 {
-		return fmt.Sprintf("%.2f KiB", float64(size)/1024)
-	} else if size < 1024*1024*1024 {
-		return fmt.Sprintf("%.2f MiB", float64(size)/(1024*1024))
-	} else {
-		return fmt.Sprintf("%.2f GiB", float64(size)/(1024*1024*1024))
+		return fmt.Sprintf("%d B", size)
 	}
+	const unit = 1024
+	if exp := int64(math.Log(float64(size)) / math.Log(float64(unit))); exp < 7 {
+		pre := "KMGTPE"[exp-1]
+		return fmt.Sprintf("%.1f %ciB", float64(size)/math.Pow(float64(unit), float64(exp)), pre)
+	}
+	return fmt.Sprintf("%.1f %cB", float64(size)/math.Pow(float64(unit), 7), 'Z')
 }
 
 // func spinner is used to display a spinner on the command line while the program is running
 func spinner(stop chan bool, totalFilesCount *int64, totalDirectoriesCount *int64, start *time.Time) {
-	frames := []string{"◐", "◓", "◑", "◒"} // Define the frames for the spinner
-
+	// Define the frames for the spinner
+	frames := []string{"◐", "◓", "◑", "◒", "\u26A1"}
 	for {
 		select {
 		case <-stop:
-			return // Stop the spinner when a value is received on the stop channel
+			// Stop the spinner when a value is received on the stop channel
+			return
 		default:
 			for _, frame := range frames {
 				duration := time.Since(*start)
 				rate := float64(*totalFilesCount) / duration.Seconds()
-				fmt.Printf("\r%s Scanning... Files scanned: %d Directories scanned: %d Rate: %.1f files/second", frame, *totalFilesCount, *totalDirectoriesCount, rate)
+				fmt.Printf("\r%s Scanning... Files scanned: %d Directories scanned: %d Rate: %.0f files/second", frame, *totalFilesCount, *totalDirectoriesCount, rate)
 				time.Sleep(250 * time.Millisecond)
 			}
 		}
 	}
+}
+
+// func to calculate the average file size
+func averageFileSize(fileSize int64, fileCount int64) string {
+	average := float64(fileSize) / float64(fileCount)
+	average = math.Round(average*100) / 100
+	return humanReadableSize(int64(average))
 }
 
 func main() {
@@ -110,6 +120,7 @@ func main() {
 	// -i print out the build information
 	// -f print out only the file types/extensions information
 	// -u print out only the user information
+	// -t log file target directory
 
 	loggingEnabled := false
 	directoryToScan := "/home"
@@ -117,9 +128,11 @@ func main() {
 	buildInfo := false
 	fileTypesOnly := false
 	userInfoOnly := false
+	loggingTargetDirectory := "/tmp"
 
-	flag.BoolVar(&loggingEnabled, "l", false, "enable logging. Please find the dirscan.log file in the dirscan working directory")
-	flag.StringVar(&directoryToScan, "d", "/home", "directory to scan. Default is /home")
+	flag.BoolVar(&loggingEnabled, "l", false, "enable logging")
+	flag.StringVar(&loggingTargetDirectory, "t", "/var/log", "log file target directory")
+	flag.StringVar(&directoryToScan, "d", "/home", "directory to scan")
 	flag.BoolVar(&verboseEnabled, "v", false, "enable verbose and detailed output")
 	flag.BoolVar(&buildInfo, "i", false, "print out the build information")
 	flag.BoolVar(&fileTypesOnly, "f", false, "print out only the file types/extensions information")
@@ -136,7 +149,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	logFile, err := os.OpenFile("dirscan.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	logFile, err := os.OpenFile(path.Join(loggingTargetDirectory, "dirscan.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatalf("Failed to create log logFile: %v", err)
 	}
@@ -404,10 +417,10 @@ func main() {
 
 		logger.Printf("Consumption by user:\n")
 		for _, userEntry := range users {
-			logger.Printf("\t%s: Capacity %s #of files %d \n", userEntry.name, humanReadableSize(userEntry.size), userEntry.count)
+			fmt.Printf("\t%s: Capacity: %s #of files: %d average file size: %s \n", userEntry.name, humanReadableSize(userEntry.size), userEntry.count, averageFileSize(userEntry.size, userEntry.count))
 			if verboseEnabled {
 				for _, ft := range userEntry.filetypes {
-					fmt.Printf("\t\t%s: %s #of files %d\n", ft.extension, humanReadableSize(ft.size), ft.count)
+					fmt.Printf("\t\t%s: %s #of files: %d average file size: %s\n", ft.extension, humanReadableSize(ft.size), ft.count, averageFileSize(ft.size, ft.count))
 				}
 			}
 		}
@@ -422,7 +435,7 @@ func main() {
 		fmt.Printf("\t%s: %s #of files %d\n", fileTypeEntry.extension, humanReadableSize(fileTypeEntry.size), fileTypeEntry.count)
 		if verboseEnabled {
 			for _, userEntry := range fileTypeEntry.users {
-				logger.Printf("\t\t%s: Capacity %s #of files %d \n", userEntry.name, humanReadableSize(userEntry.size), userEntry.count)
+				fmt.Printf("\t\t%s: Capacity %s #of files %d \n", userEntry.name, humanReadableSize(userEntry.size), userEntry.count)
 			}
 		}
 	}
