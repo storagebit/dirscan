@@ -131,7 +131,7 @@ func main() {
 	loggingTargetDirectory := "/tmp"
 
 	flag.BoolVar(&loggingEnabled, "l", false, "enable logging")
-	flag.StringVar(&loggingTargetDirectory, "t", "/var/log", "log file target directory")
+	flag.StringVar(&loggingTargetDirectory, "t", "/tmp", "log file target directory")
 	flag.StringVar(&directoryToScan, "d", "/home", "directory to scan")
 	flag.BoolVar(&verboseEnabled, "v", false, "enable verbose and detailed output")
 	flag.BoolVar(&buildInfo, "i", false, "print out the build information")
@@ -164,7 +164,7 @@ func main() {
 	// If logging is enabled, create a new logger that writes to both the command line and the log logFile.
 	if loggingEnabled {
 		logger = log.New(io.MultiWriter(os.Stdout, logFile), "", log.Ldate|log.Ltime|log.Lshortfile)
-		logger.Printf("Logging enabled. Please find the dirscan.log file in the dirscan working directory")
+		logger.Printf("Logging enabled. Please find the dirscan.log file located in %s\n", loggingTargetDirectory)
 	}
 	// channel used to stop the spinner
 	stop := make(chan bool)
@@ -204,15 +204,15 @@ func main() {
 				logger.Printf("Error walking directory %s: %s, skipping\n", path, err)
 			}
 		}
-		// if the logFile is a directory
+		// if the is not a directory, process the file
 		if !info.IsDir() {
 			//
 			totalFilesCount++
 
-			// getting the extension of the logFile
+			// getting the extension of the file
 			extension := filepath.Ext(path)
 
-			// if the logFile has no extension we will try to determine if its binary or plain text/ASCII
+			// if the file has no extension we will try to determine if its binary or plain text/ASCII
 			if extension == "" {
 				data, err := os.Open(path)
 				if err != nil {
@@ -222,7 +222,7 @@ func main() {
 						logger.Printf("Error opening %s: %s, skipping\n", path, err)
 					}
 
-					// closing the logFile
+					// closing the file
 					defer func(data *os.File) {
 						err := data.Close()
 						if err != nil {
@@ -238,7 +238,7 @@ func main() {
 					// if we can open the file we will try to determine if its binary or text
 					isBinary := false
 
-					// reading the first 10 lines of the logFile
+					// reading the first 10 lines of the file
 					fileScanner := bufio.NewScanner(data)
 					for i := 0; i < 10 && fileScanner.Scan(); i++ {
 
@@ -257,7 +257,7 @@ func main() {
 							extension = "no_extension_text"
 						}
 					}
-					// closing the logFile
+					// closing the file
 					defer func(data *os.File) {
 						err := data.Close()
 						if err != nil {
@@ -269,13 +269,13 @@ func main() {
 				}
 
 			}
-			//getting the size of the logFile
+			//getting the size of the file in bytes
 			size := info.Size()
 
 			// adding the size to the total size
 			totalCapacity += size
 
-			// getting the owner of the logFile
+			// getting the owner of the file
 			owner, err := user.LookupId(fmt.Sprintf("%d", info.Sys().(*syscall.Stat_t).Uid))
 			// if we cannot get the owner we will just use the uid
 			if err != nil {
@@ -287,7 +287,7 @@ func main() {
 			// checking if the extension is already in the list
 			extensionFound := false
 
-			// looping through the list of logFile extensions
+			// looping through the list of file extensions
 			for i := range fileTypes {
 
 				// if the extension is already in the list we will add the size to the total size and increase the count
@@ -397,7 +397,7 @@ func main() {
 
 		} else {
 
-			// if the logFile is a directory we will increase the total number of directories
+			// if the entry is a directory we will increase the total number of directories
 			totalDirectoriesCount++
 		}
 		return nil
@@ -417,7 +417,7 @@ func main() {
 
 		logger.Printf("Consumption by user:\n")
 		for _, userEntry := range users {
-			fmt.Printf("\t%s: Capacity: %s #of files: %d average file size: %s \n", userEntry.name, humanReadableSize(userEntry.size), userEntry.count, averageFileSize(userEntry.size, userEntry.count))
+			fmt.Printf("\t%s: Capacity: %s, #of files: %d, average file size: %s \n", userEntry.name, humanReadableSize(userEntry.size), userEntry.count, averageFileSize(userEntry.size, userEntry.count))
 			if verboseEnabled {
 				for _, ft := range userEntry.filetypes {
 					fmt.Printf("\t\t%s: %s #of files: %d average file size: %s\n", ft.extension, humanReadableSize(ft.size), ft.count, averageFileSize(ft.size, ft.count))
@@ -432,10 +432,10 @@ func main() {
 	logger.Println("")
 	logger.Printf("Consumption by file type/extension:\n")
 	for _, fileTypeEntry := range fileTypes {
-		fmt.Printf("\t%s: %s #of files %d\n", fileTypeEntry.extension, humanReadableSize(fileTypeEntry.size), fileTypeEntry.count)
+		fmt.Printf("\t%s: %s, #of files %d, average filesize: %s\n", fileTypeEntry.extension, humanReadableSize(fileTypeEntry.size), fileTypeEntry.count, averageFileSize(fileTypeEntry.size, fileTypeEntry.count))
 		if verboseEnabled {
 			for _, userEntry := range fileTypeEntry.users {
-				fmt.Printf("\t\t%s: Capacity %s #of files %d \n", userEntry.name, humanReadableSize(userEntry.size), userEntry.count)
+				fmt.Printf("\t\t%s: Capacity %s, #of files %d, average filesize: %s \n", userEntry.name, humanReadableSize(userEntry.size), userEntry.count, averageFileSize(userEntry.size, userEntry.count))
 			}
 		}
 	}

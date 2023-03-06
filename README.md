@@ -1,6 +1,6 @@
 # dirscan
 Scan a directory tree to report data usage by user and file size and types( file count and capacities)   
-Report the avrage file size for each entry.
+Report the average file size for each entry.
 
 ## Usage
 ```
@@ -17,5 +17,5 @@ Usage of ./dirscan:
 ```
 
 ## Note
-The binary available here on github was build on a fairly new Linux system.
-If you see glibc related errors, you most likly run on a more dated version that my build system and you need to build it on your system.
+The binary available here on GitHub was build on a fairly new Linux system.
+If you see glibc version related errors or messages, you most likely run on a more dated version that my build system, and you need to build it on your system.
