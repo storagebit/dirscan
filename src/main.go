@@ -1,443 +1,260 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
-	"io"
-	"log"
-	"math"
 	"os"
-	"os/user"
-	"path"
+	"os/signal"
 	"path/filepath"
-	"sort"
+	"runtime"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
-// defining variables used to hold the build information when compiling the program
-var (
-	buildSha1      string // sha1 revision used to build the program
-	buildTime      string // when the executable was built
-	buildBranch    string // branch used to build the program
-	buildOS        string // operating system used to build the program
-	buildGoVersion string // go version used to build the program
-)
+var verbose bool
+var debugOn bool
 
-// Struct defining and used to hold information in the context of files and file extensions
-type fileType struct {
-	extension string
-	size      int64
-	count     int64
-	users     []fileTypeUserInfo
+func main() {
+	// Parse command line arguments
+	var dir string
+	var workers int
+	flag.StringVar(&dir, "d", "/home", "directory to scan")
+	flag.IntVar(&workers, "w", runtime.NumCPU(), "number of workers to use")
+	flag.BoolVar(&verbose, "v", false, "verbose output")
+	flag.BoolVar(&debugOn, "debug", false, "enable debug output")
+	flag.Parse()
+
+	//print if verbose output is enabled
+	if verbose {
+		fmt.Println("Verbose output is enabled")
+	}
+
+	if debugOn {
+		fmt.Println("\u261E Debugging is enabled")
+		//print all the command line arguments
+		fmt.Printf("\u261E Command line executed: %v\n", strings.Join(os.Args, " "))
+	}
+
+	// create a channel used to manage signals
+	// sigs := make(chan os.Signal, 1)
+	sigs := make(chan os.Signal, 1)
+
+	// print the sigs channel debug info
+	if debugOn {
+		fmt.Printf("\u261E Created sigs channel at: %p\n", sigs)
+	}
+
+	// register for SIGINT and SIGTERM signals for proper termination if required
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+
+	//starting the goroutine to handle signals
+	go func() {
+		//print goroutine debug info
+		if debugOn {
+			fmt.Printf("\u261E Signal handling routine started.\n")
+		}
+
+		select {
+		case sig := <-sigs:
+			switch sig {
+			case syscall.SIGINT:
+				fmt.Println("\nKeyboard interrupt CTRL-C received, exiting...")
+				os.Exit(0)
+			case syscall.SIGTERM:
+				fmt.Println("\nSIGTERM signal received, exiting...")
+				os.Exit(0)
+			}
+		}
+	}()
+
+	//the number of workers should be at least 2 and cannot be more than the number of CPUs
+	if workers < 2 {
+		workers = 2
+	}
+	if workers > runtime.NumCPU() {
+		fmt.Printf("Warning: number of workers (%d) is greater than number of CPUs/cores available (%d)!\n", workers, runtime.NumCPU())
+		workers = runtime.NumCPU()
+	}
+	fmt.Printf("Using %d workers.\n", workers)
+
+	// Check if the directory exists
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		fmt.Printf("Error: directory %s does not exist\n", dir)
+		return
+	}
+
+	// Get the list of files to process
+	files := make(chan string)
+
+	//print the files channel debug info
+	if debugOn {
+		fmt.Printf("\u261E Created files channel at: %p\n", files)
+	}
+
+	//create a channel to stop the spinner
+	stop := make(chan struct{})
+
+	//print the spinner channel debug info
+	if debugOn {
+		fmt.Printf("\u261E Created stop channel at: %p\n", stop)
+	}
+
+	//counters for processed files, directories and capacity
+	var totalFileCount uint64   // counter for processed files
+	var totalCapacity uint64    // capacity of all processed files
+	var totalDirectories uint64 // counter for processed directories
+
+	go func() {
+		//print goroutine info
+		if debugOn {
+			fmt.Printf("\u261E Directory walking routine started.\n")
+		}
+		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if info.IsDir() && path == "/proc" {
+				return filepath.SkipDir
+			}
+			if info.IsDir() && path == "/run" {
+				return filepath.SkipDir
+			}
+
+			if !info.IsDir() {
+				files <- path
+			} else {
+				if verbose {
+					fmt.Printf("Directory:%s\n", path)
+				}
+				totalDirectories++
+			}
+			return nil
+		})
+		if err != nil {
+			if verbose || debugOn {
+				fmt.Printf("Error: %s\n", err)
+			}
+			return
+		}
+		close(files)
+	}()
+
+	// Start the workers
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	//get the start time
+	startTime := time.Now()
+
+	//print the directory to scan
+	fmt.Printf("Scanning directory: %s\n", dir)
+
+	//print the start time
+	fmt.Printf("Start time: %s\n", startTime.Format("15:04:05"))
+
+	//start the spinner only if no verbose output is enabled (to avoid spinner and verbose output overlapping) and if debug is disabled
+	if !verbose && !debugOn {
+		go spinner(stop)
+	}
+
+	for i := 0; i < workers; i++ {
+		go func() {
+			//print goroutine info
+			if debugOn {
+				fmt.Printf("\u261E Worker routine started.\n")
+			}
+			for file := range files {
+				size, _ := processFile(file)
+				totalFileCount++
+				totalCapacity += size
+			}
+			wg.Done()
+		}()
+	}
+
+	wg.Wait()
+
+	//stop the spinner
+	//not needed if verbose output is enabled or if debug is enabled
+	if !verbose && !debugOn {
+		stop <- struct{}{}
+	}
+
+	endTime := time.Now()
+
+	fmt.Printf("\rEnd time: %s                    \n", endTime.Format("15:04:05"))
+
+	//determine the run time
+	runTime := endTime.Sub(startTime)
+	hours := int(runTime.Hours())
+	minutes := int(runTime.Minutes()) % 60
+	seconds := int(runTime.Seconds()) % 60
+
+	fmt.Printf("Run/Scan time: %02dh:%02dm:%02ds\n", hours, minutes, seconds)
+
+	fmt.Printf("Processed %d files in %d directories and capacity of %s. The average file size is: %s\n",
+		totalFileCount, totalDirectories, formatSize(totalCapacity), formatSize(totalCapacity/totalFileCount))
 }
 
-// Struct defining and holding the user information about a specific file/file extension
-type fileTypeUserInfo struct {
-	name  string
-	size  int64
-	count int64
+func processFile(file string) (uint64, error) {
+
+	//check if the file is a symlink
+	if fileInfo, err := os.Lstat(file); err == nil {
+		if fileInfo.Mode()&os.ModeSymlink != 0 {
+			if verbose || debugOn {
+				fmt.Printf("File:\t\t%s: is a symlink, skipping...\n", file)
+			}
+			return 0, nil
+		}
+	}
+
+	// stat the file
+	fileInfo, err := os.Stat(file)
+
+	if err != nil {
+		if os.IsNotExist(err) {
+			if verbose || debugOn {
+				fmt.Printf("File:\t\t%s: does not exist, skipping...\n", file)
+			}
+			return 0, nil
+		}
+		if verbose || debugOn {
+			fmt.Printf("Error: %s\n", err)
+		}
+		return 0, err
+	}
+	// print the file info if verbose output is enabled or if debug is enabled
+	if verbose || debugOn {
+		fmt.Printf("File:\t\t%s: %d bytes owner: %d\n", file, fileInfo.Size(), fileInfo.Sys().(*syscall.Stat_t).Uid)
+	}
+	return uint64(fileInfo.Size()), nil
 }
 
-// Struct defining a struct used to hold information in the context of a user
-type userInfo struct {
-	name      string
-	size      int64
-	count     int64
-	filetypes []userFileType
-}
-
-// defining a struct used to hold information in the context of file extension for a user
-type userFileType struct {
-	extension string
-	size      int64
-	count     int64
-}
-
-// defining type used to sort the file extension information by size descending
-type bySize []fileType
-
-// defining type used to sort the user information by size descending
-type bySizeUser []userInfo
-
-// Len Swap Less defining functions used to sort the file extension information by size descending
-func (a bySize) Len() int           { return len(a) }
-func (a bySize) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a bySize) Less(i, j int) bool { return a[i].size > a[j].size }
-
-// Len Swap Less defining functions used to sort the user information by size descending
-func (a bySizeUser) Len() int           { return len(a) }
-func (a bySizeUser) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a bySizeUser) Less(i, j int) bool { return a[i].size > a[j].size }
-
-// func humanReadableSize is used to convert a size in bytes to a human-readable format
-func humanReadableSize(size int64) string {
-	if size < 1024 {
+func formatSize(size uint64) string {
+	const unit = 1024
+	if size < unit {
 		return fmt.Sprintf("%d B", size)
 	}
-	const unit = 1024
-	if exp := int64(math.Log(float64(size)) / math.Log(float64(unit))); exp < 7 {
-		pre := "KMGTPE"[exp-1]
-		return fmt.Sprintf("%.1f %ciB", float64(size)/math.Pow(float64(unit), float64(exp)), pre)
+	div, exp := int64(unit), 0
+	for n := size / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
 	}
-	return fmt.Sprintf("%.1f %cB", float64(size)/math.Pow(float64(unit), 7), 'Z')
+	return fmt.Sprintf("%.1f %ciB", float64(size)/float64(div), "KMGTPE"[exp])
 }
 
-// func spinner is used to display a spinner on the command line while the program is running
-func spinner(stop chan bool, totalFilesCount *int64, totalDirectoriesCount *int64, start *time.Time) {
-	// Define the frames for the spinner
-	frames := []string{"◐", "◓", "◑", "◒", "\u26A1"}
+func spinner(stop chan struct{}) {
+	// Set the spinner characters
+	chars := []string{"✶", "✸", "✹", "✺", "✹", "✸", "✷"}
+	i := 0
 	for {
 		select {
 		case <-stop:
-			// Stop the spinner when a value is received on the stop channel
+			fmt.Print("")
 			return
 		default:
-			for _, frame := range frames {
-				duration := time.Since(*start)
-				rate := float64(*totalFilesCount) / duration.Seconds()
-				fmt.Printf("\r%s Scanning... Files scanned: %d Directories scanned: %d Rate: %.0f files/second", frame, *totalFilesCount, *totalDirectoriesCount, rate)
-				time.Sleep(250 * time.Millisecond)
-			}
+			fmt.Printf("\r%s Scanning, please wait.", chars[i%len(chars)])
+			i++
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
-}
-
-// func to calculate the average file size
-func averageFileSize(fileSize int64, fileCount int64) string {
-	average := float64(fileSize) / float64(fileCount)
-	average = math.Round(average*100) / 100
-	return humanReadableSize(int64(average))
-}
-
-func main() {
-
-	// define command line arguments
-	// -d directory to scan
-	// -l enable logging
-	// -v verbose logging
-	// -i print out the build information
-	// -f print out only the file types/extensions information
-	// -u print out only the user information
-	// -t log file target directory
-
-	loggingEnabled := false
-	directoryToScan := "/home"
-	verboseEnabled := false
-	buildInfo := false
-	fileTypesOnly := false
-	userInfoOnly := false
-	loggingTargetDirectory := "/tmp"
-
-	flag.BoolVar(&loggingEnabled, "l", false, "enable logging")
-	flag.StringVar(&loggingTargetDirectory, "t", "/tmp", "log file target directory")
-	flag.StringVar(&directoryToScan, "d", "/home", "directory to scan")
-	flag.BoolVar(&verboseEnabled, "v", false, "enable verbose and detailed output")
-	flag.BoolVar(&buildInfo, "i", false, "print out the build information")
-	flag.BoolVar(&fileTypesOnly, "f", false, "print out only the file types/extensions information")
-	flag.BoolVar(&userInfoOnly, "u", false, "print out only the user information")
-
-	flag.Parse()
-
-	if buildInfo {
-		fmt.Printf("Build date:\t%s\n"+
-			"From branch:\t%s\n"+
-			"With sha1:\t%s\n"+
-			"On:\t\t%s\n"+
-			"Using:\t\t%s\n", buildTime, buildBranch, buildSha1, buildOS, buildGoVersion)
-		os.Exit(0)
-	}
-
-	logFile, err := os.OpenFile(path.Join(loggingTargetDirectory, "dirscan.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Fatalf("Failed to create log logFile: %v", err)
-	}
-	defer func(file *os.File) {
-		err := file.Close()
-		if err != nil {
-			log.Fatalf("Failed to close log logFile: %v", err)
-		}
-	}(logFile)
-
-	logger := log.New(io.MultiWriter(os.Stdout), "", log.Ltime)
-	// If logging is enabled, create a new logger that writes to both the command line and the log logFile.
-	if loggingEnabled {
-		logger = log.New(io.MultiWriter(os.Stdout, logFile), "", log.Ldate|log.Ltime|log.Lshortfile)
-		logger.Printf("Logging enabled. Please find the dirscan.log file located in %s\n", loggingTargetDirectory)
-	}
-	// channel used to stop the spinner
-	stop := make(chan bool)
-
-	var directory = directoryToScan
-	logger.Printf("Target directory: %s\n", directory)
-
-	//defining lists used to hold the filetype information
-	var fileTypes []fileType
-
-	//defining lists used to hold the user information
-	var users []userInfo
-
-	var totalFilesCount int64
-	var totalCapacity int64
-	var totalDirectoriesCount int64
-
-	// starting a timer later used to calculate the time it took to scan the directory and to calculate the scan rate
-	start := time.Now()
-
-	// getting the current user
-	currentUser, err := user.Current()
-	if err != nil {
-		log.Fatal("Error getting current user: ", err)
-	}
-
-	logger.Printf("Scanning directory: %s\n", directory)
-	logger.Printf("Scanning as user: %s\n", currentUser.Username)
-
-	// starting the spinner
-	go spinner(stop, &totalFilesCount, &totalDirectoriesCount, &start)
-
-	// starting the walk of the directory down into the rabbit hole
-	err = filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			if verboseEnabled {
-				logger.Printf("Error walking directory %s: %s, skipping\n", path, err)
-			}
-		}
-		// if the is not a directory, process the file
-		if !info.IsDir() {
-			//
-			totalFilesCount++
-
-			// getting the extension of the file
-			extension := filepath.Ext(path)
-
-			// if the file has no extension we will try to determine if its binary or plain text/ASCII
-			if extension == "" {
-				data, err := os.Open(path)
-				if err != nil {
-					// as we cannot determine if its binary or text we will just call it unknown
-					extension = "no_extension_unknown_format"
-					if verboseEnabled {
-						logger.Printf("Error opening %s: %s, skipping\n", path, err)
-					}
-
-					// closing the file
-					defer func(data *os.File) {
-						err := data.Close()
-						if err != nil {
-							if verboseEnabled {
-								logger.Printf("Error closing %s: %s, skipping\n", path, err)
-							}
-						}
-					}(data)
-					if verboseEnabled {
-						logger.Printf("Error opening %s: %s, skipping\n", path, err)
-					}
-				} else {
-					// if we can open the file we will try to determine if its binary or text
-					isBinary := false
-
-					// reading the first 10 lines of the file
-					fileScanner := bufio.NewScanner(data)
-					for i := 0; i < 10 && fileScanner.Scan(); i++ {
-
-						// if we find a character that is not in the range of 32-126 we will assume its binary
-						line := fileScanner.Text()
-						for _, c := range line {
-							if c < 32 || c > 126 {
-								isBinary = true
-								//
-								break
-							}
-						}
-						if isBinary {
-							extension = "no_extension_binary"
-						} else {
-							extension = "no_extension_text"
-						}
-					}
-					// closing the file
-					defer func(data *os.File) {
-						err := data.Close()
-						if err != nil {
-							if verboseEnabled {
-								logger.Printf("Error closing logFile %s: %s, skipping\n", path, err)
-							}
-						}
-					}(data)
-				}
-
-			}
-			//getting the size of the file in bytes
-			size := info.Size()
-
-			// adding the size to the total size
-			totalCapacity += size
-
-			// getting the owner of the file
-			owner, err := user.LookupId(fmt.Sprintf("%d", info.Sys().(*syscall.Stat_t).Uid))
-			// if we cannot get the owner we will just use the uid
-			if err != nil {
-				owner = &user.User{Uid: fmt.Sprintf("%d", info.Sys().(*syscall.Stat_t).Uid)}
-				if verboseEnabled {
-					logger.Printf("Error getting owner of %s: %s, using uid instead\n", path, err)
-				}
-			}
-			// checking if the extension is already in the list
-			extensionFound := false
-
-			// looping through the list of file extensions
-			for i := range fileTypes {
-
-				// if the extension is already in the list we will add the size to the total size and increase the count
-				if fileTypes[i].extension == extension {
-					fileTypes[i].size += size
-					fileTypes[i].count++
-					extensionFound = true
-
-					// checking if the user is already in the list
-					userFound := false
-
-					// looping through the list of users
-					for j := range fileTypes[i].users {
-
-						// if the user is already in the list we will add the size to the total size and increase the count
-						if fileTypes[i].users[j].name == owner.Username {
-							fileTypes[i].users[j].size += size
-							fileTypes[i].users[j].count++
-							userFound = true
-							// breaking out of the loop
-							break
-						}
-					}
-					// if the user is not in the list we will add it
-					if !userFound {
-						fileTypes[i].users = append(fileTypes[i].users, fileTypeUserInfo{
-							name:  owner.Username,
-							size:  size,
-							count: 1,
-						})
-					}
-					// breaking out of the loop
-					break
-				}
-			}
-
-			// if the extension is not in the list we will add it
-			if !extensionFound {
-				fileTypes = append(fileTypes, fileType{
-					extension: extension,
-					size:      size,
-					count:     1,
-					users: []fileTypeUserInfo{{
-						name:  owner.Username,
-						size:  size,
-						count: 1,
-					}},
-				})
-			}
-
-			// checking if the user is already in the list
-			extensionUserFound := false
-
-			// looping through the list of users
-			for i := range users {
-
-				//if the user is already in the list we will add the size to the total size and increase the count
-				if users[i].name == owner.Username {
-					users[i].size += size
-					users[i].count++
-					extensionUserFound = true
-
-					// checking if the extension is already in the list
-					userFileExtensionFound := false
-
-					// looping through the list of extensions
-					for j := range users[i].filetypes {
-						// if the extension is already in the list we will add the size to the total size and increase the count
-						if users[i].filetypes[j].extension == extension {
-							users[i].filetypes[j].size += size
-							users[i].filetypes[j].count++
-							userFileExtensionFound = true
-
-							// breaking out of the loop
-							break
-						}
-					}
-					//checking if the extension is not in the list
-					if !userFileExtensionFound {
-						// adding the extension to the list
-						users[i].filetypes = append(users[i].filetypes, userFileType{
-							extension: extension,
-							size:      size,
-							count:     1,
-						})
-					}
-
-					// breaking out of the loop
-					break
-				}
-			}
-			// if the user is not in the list we will add it
-			if !extensionUserFound {
-
-				// adding the user to the list
-				users = append(users, userInfo{
-					name:  owner.Username,
-					size:  size,
-					count: 1,
-					filetypes: []userFileType{{
-						extension: extension,
-						size:      size,
-						count:     1,
-					}},
-				})
-			}
-
-		} else {
-
-			// if the entry is a directory we will increase the total number of directories
-			totalDirectoriesCount++
-		}
-		return nil
-	})
-
-	sort.Sort(bySize(fileTypes))
-
-	sort.Sort(bySizeUser(users))
-
-	stop <- true
-
-	fmt.Println("")
-	logger.Printf("\nTotal capacity: %s Total files: %d, Total directories: %d\n", humanReadableSize(totalCapacity), totalFilesCount, totalDirectoriesCount)
-	logger.Printf("Total scanning time: %s\n", time.Since(start).Truncate(time.Millisecond).String())
-
-	if !fileTypesOnly {
-
-		logger.Printf("Consumption by user:\n")
-		for _, userEntry := range users {
-			fmt.Printf("\t%s: Capacity: %s, #of files: %d, average file size: %s \n", userEntry.name, humanReadableSize(userEntry.size), userEntry.count, averageFileSize(userEntry.size, userEntry.count))
-			if verboseEnabled {
-				for _, ft := range userEntry.filetypes {
-					fmt.Printf("\t\t%s: %s #of files: %d average file size: %s\n", ft.extension, humanReadableSize(ft.size), ft.count, averageFileSize(ft.size, ft.count))
-				}
-			}
-		}
-	}
-	if userInfoOnly {
-		os.Exit(0)
-	}
-
-	logger.Println("")
-	logger.Printf("Consumption by file type/extension:\n")
-	for _, fileTypeEntry := range fileTypes {
-		fmt.Printf("\t%s: %s, #of files %d, average filesize: %s\n", fileTypeEntry.extension, humanReadableSize(fileTypeEntry.size), fileTypeEntry.count, averageFileSize(fileTypeEntry.size, fileTypeEntry.count))
-		if verboseEnabled {
-			for _, userEntry := range fileTypeEntry.users {
-				fmt.Printf("\t\t%s: Capacity %s, #of files %d, average filesize: %s \n", userEntry.name, humanReadableSize(userEntry.size), userEntry.count, averageFileSize(userEntry.size, userEntry.count))
-			}
-		}
-	}
-
 }
