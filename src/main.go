@@ -15,15 +15,29 @@ import (
 
 var verbose bool
 var debugOn bool
+var reportUser bool // report the usage by user
+var reportFile bool // report the usage by file type
+var reportDir bool  // report the usage by directory
 
 func main() {
 	// Parse command line arguments
+	// -d is the directory to scan
+	// -w is the number of workers to use
+	// -v is the verbose output flag
+	// -debug is the debug output flag
+	// -user report the usage by user
+	// -file report the usage by file type
+	// -dir report the usage by directory
+	// -h is the help flag
 	var dir string
 	var workers int
 	flag.StringVar(&dir, "d", "/home", "directory to scan")
 	flag.IntVar(&workers, "w", runtime.NumCPU(), "number of workers to use")
 	flag.BoolVar(&verbose, "v", false, "verbose output")
 	flag.BoolVar(&debugOn, "debug", false, "enable debug output")
+	flag.BoolVar(&reportUser, "user", false, "report the usage by user")
+	flag.BoolVar(&reportFile, "file", false, "report the usage by file type")
+	flag.BoolVar(&reportDir, "dir", false, "report the usage by directory")
 	flag.Parse()
 
 	//print if verbose output is enabled
@@ -59,22 +73,25 @@ func main() {
 		select {
 		case sig := <-sigs:
 			switch sig {
+			//handle SIGINT and SIGTERM signals
 			case syscall.SIGINT:
+				// print the message and exit
 				fmt.Println("\nKeyboard interrupt CTRL-C received, exiting...")
 				os.Exit(0)
 			case syscall.SIGTERM:
+				// print the message and exit
 				fmt.Println("\nSIGTERM signal received, exiting...")
 				os.Exit(0)
 			}
 		}
 	}()
 
-	//the number of workers should be at least 2 and cannot be more than the number of CPUs
-	if workers < 2 {
-		workers = 2
+	//the number of workers should be at least 1 and cannot be more than the number of CPUs
+	if workers < 1 {
+		workers = 1
 	}
 	if workers > runtime.NumCPU() {
-		fmt.Printf("Warning: number of workers (%d) is greater than number of CPUs/cores available (%d)!\n", workers, runtime.NumCPU())
+		fmt.Printf("Warning: number of workers (%d) is greater than number of CPUs/cores available! Now set to the max of (%d).\n", workers, runtime.NumCPU())
 		workers = runtime.NumCPU()
 	}
 	fmt.Printf("Using %d workers.\n", workers)
@@ -156,6 +173,7 @@ func main() {
 		go spinner(stop)
 	}
 
+	//
 	for i := 0; i < workers; i++ {
 		go func() {
 			//print goroutine info
@@ -179,6 +197,7 @@ func main() {
 		stop <- struct{}{}
 	}
 
+	//
 	endTime := time.Now()
 
 	fmt.Printf("\rEnd time: %s                    \n", endTime.Format("15:04:05"))
@@ -189,12 +208,19 @@ func main() {
 	minutes := int(runTime.Minutes()) % 60
 	seconds := int(runTime.Seconds()) % 60
 
+	//calculate the average file size and make sure it's no division by zero
+	avgFileSize := uint64(0)
+	if totalFileCount > 0 {
+		avgFileSize = totalCapacity / totalFileCount
+	}
+
 	fmt.Printf("Run/Scan time: %02dh:%02dm:%02ds\n", hours, minutes, seconds)
 
 	fmt.Printf("Processed %d files in %d directories and capacity of %s. The average file size is: %s\n",
-		totalFileCount, totalDirectories, formatSize(totalCapacity), formatSize(totalCapacity/totalFileCount))
+		totalFileCount, totalDirectories, formatSize(totalCapacity), formatSize(avgFileSize))
 }
 
+// processFile processes the file - called by the workers
 func processFile(file string) (uint64, error) {
 
 	//check if the file is a symlink
@@ -229,6 +255,7 @@ func processFile(file string) (uint64, error) {
 	return uint64(fileInfo.Size()), nil
 }
 
+// formatSize formats the size in bytes to a human readable format
 func formatSize(size uint64) string {
 	const unit = 1024
 	if size < unit {
@@ -242,6 +269,7 @@ func formatSize(size uint64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(size)/float64(div), "KMGTPE"[exp])
 }
 
+// spinner prints a spinner to the console
 func spinner(stop chan struct{}) {
 	// Set the spinner characters
 	chars := []string{"✶", "✸", "✹", "✺", "✹", "✸", "✷"}
