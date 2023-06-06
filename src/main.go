@@ -13,11 +13,19 @@ import (
 	"time"
 )
 
-var verbose bool
-var debugOn bool
-var reportUser bool // report the usage by user
-var reportFile bool // report the usage by file type
-var reportDir bool  // report the usage by directory
+var (
+	buildSha1      string // sha1 revision used to build the program
+	buildTime      string // when the executable was built
+	buildBranch    string // branch used to build the program
+	buildOS        string // operating system used to build the program
+	buildGoVersion string // go version used to build the program
+	verbose        bool
+	debugOn        bool
+	reportUser     bool // report the usage by user
+	reportFile     bool // report the usage by file type
+	reportDir      bool // report the usage by directory
+	buildInfo      bool
+)
 
 func main() {
 	// Parse command line arguments
@@ -28,17 +36,31 @@ func main() {
 	// -user report the usage by user
 	// -file report the usage by file type
 	// -dir report the usage by directory
+	// -build print build info
 	// -h is the help flag
+
 	var dir string
 	var workers int
+
 	flag.StringVar(&dir, "d", "/home", "directory to scan")
-	flag.IntVar(&workers, "w", runtime.NumCPU(), "number of workers to use")
+	flag.IntVar(&workers, "w", runtime.NumCPU()*2, "number of workers to use")
 	flag.BoolVar(&verbose, "v", false, "verbose output")
 	flag.BoolVar(&debugOn, "debug", false, "enable debug output")
 	flag.BoolVar(&reportUser, "user", false, "report the usage by user")
 	flag.BoolVar(&reportFile, "file", false, "report the usage by file type")
 	flag.BoolVar(&reportDir, "dir", false, "report the usage by directory")
+	flag.BoolVar(&buildInfo, "build", false, "print build info")
 	flag.Parse()
+
+	//print build info if requested
+	if buildInfo {
+		fmt.Printf("Build date:\t%s\n"+
+			"From branch:\t%s\n"+
+			"With sha1:\t%s\n"+
+			"On:\t\t%s\n"+
+			"Using:\t\t%s\n", buildTime, buildBranch, buildSha1, buildOS, buildGoVersion)
+		os.Exit(0)
+	}
 
 	//print if verbose output is enabled
 	if verbose {
@@ -90,15 +112,15 @@ func main() {
 	if workers < 1 {
 		workers = 1
 	}
-	if workers > runtime.NumCPU() {
-		fmt.Printf("Warning: number of workers (%d) is greater than number of CPUs/cores available! Now set to the max of (%d).\n", workers, runtime.NumCPU())
-		workers = runtime.NumCPU()
+	if workers > runtime.NumCPU()*2 {
+		fmt.Printf("Warning: number of workers (%d) is greater than twice the number of CPUs/cores available! Now set to the max of (%d).\n", workers, runtime.NumCPU()*2)
+		workers = runtime.NumCPU() * 2
 	}
 	fmt.Printf("Using %d workers.\n", workers)
 
 	// Check if the directory exists
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		fmt.Printf("Error: directory %s does not exist\n", dir)
+		fmt.Printf("ERROR: directory %s does not exist\n", dir)
 		return
 	}
 
@@ -129,18 +151,18 @@ func main() {
 			fmt.Printf("\u261E Directory walking routine started.\n")
 		}
 		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if info.IsDir() && path == "/proc" {
-				return filepath.SkipDir
-			}
-			if info.IsDir() && path == "/run" {
-				return filepath.SkipDir
+			if err != nil {
+				if verbose || debugOn {
+					fmt.Printf("ERROR: %s\n", err)
+				}
+				return nil
 			}
 
 			if !info.IsDir() {
 				files <- path
 			} else {
 				if verbose {
-					fmt.Printf("Directory:%s\n", path)
+					fmt.Printf("Directory:\t%s\n", path)
 				}
 				totalDirectories++
 			}
@@ -148,7 +170,7 @@ func main() {
 		})
 		if err != nil {
 			if verbose || debugOn {
-				fmt.Printf("Error: %s\n", err)
+				fmt.Printf("ERROR: %s\n", err)
 			}
 			return
 		}
@@ -244,7 +266,7 @@ func processFile(file string) (uint64, error) {
 			return 0, nil
 		}
 		if verbose || debugOn {
-			fmt.Printf("Error: %s\n", err)
+			fmt.Printf("ERROR: %s\n", err)
 		}
 		return 0, err
 	}
