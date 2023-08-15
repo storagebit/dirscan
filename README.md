@@ -15,7 +15,3 @@ Usage of ./dirscan:
   -u    print out only the user information
   -v    enable verbose and detailed output
 ```
-
-## Note
-The binary available here on GitHub was build on a fairly new Linux system.
-If you see glibc version related errors or messages, you most likely run on a more dated version that my build system, and you need to build it on your system.

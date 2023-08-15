@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"os/signal"
 	"os/user"
 	"path"
 	"path/filepath"
@@ -97,7 +98,7 @@ func spinner(stop chan bool, totalFilesCount *int64, totalDirectoriesCount *int6
 			for _, frame := range frames {
 				duration := time.Since(*start)
 				rate := float64(*totalFilesCount) / duration.Seconds()
-				fmt.Printf("\r%s Scanning... Files scanned: %d Directories scanned: %d Rate: %.0f files/second", frame, *totalFilesCount, *totalDirectoriesCount, rate)
+				fmt.Printf("\r%s Scanning... Files scanned: %d Directories scanned: %d Rate: %.0f files/second \033[0K", frame, *totalFilesCount, *totalDirectoriesCount, rate)
 				time.Sleep(250 * time.Millisecond)
 			}
 		}
@@ -121,6 +122,10 @@ func main() {
 	// -f print out only the file types/extensions information
 	// -u print out only the user information
 	// -t log file target directory
+
+	// Create a channel to receive signals
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
 	loggingEnabled := false
 	directoryToScan := "/home"
@@ -166,11 +171,22 @@ func main() {
 		logger = log.New(io.MultiWriter(os.Stdout, logFile), "", log.Ldate|log.Ltime|log.Lshortfile)
 		logger.Printf("Logging enabled. Please find the dirscan.log file located in %s\n", loggingTargetDirectory)
 	}
+
+	//start a go routine to listen for signals in the background and to act on them
+	go func() {
+		sig := <-sigCh
+		fmt.Printf("\n")
+		logger.Println("Received signal: ", sig)
+		logger.Println("Quitting after signal: ", sig)
+		logger.Println("Goodbye")
+		os.Exit(0)
+	}()
+
 	// channel used to stop the spinner
 	stop := make(chan bool)
 
 	var directory = directoryToScan
-	logger.Printf("Target directory: %s\n", directory)
+	//logger.Printf("Target directory: %s\n", directory)
 
 	//defining lists used to hold the filetype information
 	var fileTypes []fileType
@@ -202,6 +218,12 @@ func main() {
 		if err != nil {
 			if verboseEnabled {
 				logger.Printf("Error walking directory %s: %s, skipping\n", path, err)
+			} else {
+				return nil
+			}
+		} else {
+			if verboseEnabled {
+				logger.Printf("Walking directory %s\n", path)
 			}
 		}
 		// if the is not a directory, process the file
@@ -220,19 +242,24 @@ func main() {
 					extension = "no_extension_unknown_format"
 					if verboseEnabled {
 						logger.Printf("Error opening %s: %s, skipping\n", path, err)
+					} else {
+						return nil
 					}
-
 					// closing the file
 					defer func(data *os.File) {
 						err := data.Close()
 						if err != nil {
 							if verboseEnabled {
 								logger.Printf("Error closing %s: %s, skipping\n", path, err)
+							} else {
+								return
 							}
 						}
 					}(data)
 					if verboseEnabled {
 						logger.Printf("Error opening %s: %s, skipping\n", path, err)
+					} else {
+						return nil
 					}
 				} else {
 					// if we can open the file we will try to determine if its binary or text
@@ -247,7 +274,6 @@ func main() {
 						for _, c := range line {
 							if c < 32 || c > 126 {
 								isBinary = true
-								//
 								break
 							}
 						}
@@ -263,11 +289,16 @@ func main() {
 						if err != nil {
 							if verboseEnabled {
 								logger.Printf("Error closing logFile %s: %s, skipping\n", path, err)
+							} else {
+								return
+							}
+						} else {
+							if verboseEnabled {
+								logger.Printf("Successfully closed logFile %s\n", path)
 							}
 						}
 					}(data)
 				}
-
 			}
 			//getting the size of the file in bytes
 			size := info.Size()
@@ -282,6 +313,12 @@ func main() {
 				owner = &user.User{Uid: fmt.Sprintf("%d", info.Sys().(*syscall.Stat_t).Uid)}
 				if verboseEnabled {
 					logger.Printf("Error getting owner of %s: %s, using uid instead\n", path, err)
+				} else {
+					return nil
+				}
+			} else {
+				if verboseEnabled {
+					logger.Printf("Successfully got owner of %s: %s\n", path, owner.Username)
 				}
 			}
 			// checking if the extension is already in the list
@@ -410,7 +447,7 @@ func main() {
 	stop <- true
 
 	fmt.Println("")
-	logger.Printf("\nTotal capacity: %s Total files: %d, Total directories: %d\n", humanReadableSize(totalCapacity), totalFilesCount, totalDirectoriesCount)
+	logger.Printf("Total capacity: %s Total files: %d, Total directories: %d\n", humanReadableSize(totalCapacity), totalFilesCount, totalDirectoriesCount)
 	logger.Printf("Total scanning time: %s\n", time.Since(start).Truncate(time.Millisecond).String())
 
 	if !fileTypesOnly {
@@ -429,7 +466,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	logger.Println("")
+	fmt.Println("")
 	logger.Printf("Consumption by file type/extension:\n")
 	for _, fileTypeEntry := range fileTypes {
 		fmt.Printf("\t%s: %s, #of files %d, average filesize: %s\n", fileTypeEntry.extension, humanReadableSize(fileTypeEntry.size), fileTypeEntry.count, averageFileSize(fileTypeEntry.size, fileTypeEntry.count))
@@ -439,5 +476,4 @@ func main() {
 			}
 		}
 	}
-
 }

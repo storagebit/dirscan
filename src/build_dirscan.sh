@@ -27,8 +27,10 @@
 
 # Build the executable
 echo -e "Compiling the binary/executable"
+export CGO_ENABLED=0
 go build -x -o ../bin/dirscan -ldflags "-X main.buildSha1=$(git rev-parse HEAD)  \
                                   -X main.buildBranch=$(git rev-parse --abbrev-ref HEAD) \
                                   -X main.buildTime=$(date +'%Y-%m-%d_%T') \
                                   -X main.buildOS=$(uname -r) \
-                                  -X main.buildGoVersion=$(go version | cut -d ' ' -f 3)"
+                                  -X main.buildGoVersion=$(go version | cut -d ' ' -f 3) \
+                                  -extldflags '-static'"
